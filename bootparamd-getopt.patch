@@ -1,0 +1,13 @@
+diff --git a/rpc.bootparamd/main.c b/rpc.bootparamd/main.c
+index cc26619..28d356c 100644
+--- a/rpc.bootparamd/main.c
++++ b/rpc.bootparamd/main.c
+@@ -37,7 +37,7 @@ main(int argc, char **argv)
+     int s, pid;
+     struct hostent *he;
+     struct stat buf;
+-    char c;
++    int c;
+     
+     progname = rindex(argv[0],'/');
+     if (progname) progname++;

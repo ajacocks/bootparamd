@@ -1,0 +1,950 @@
+--- netkit-bootparamd-0.17-pre20000412/rpc.bootparamd/bootparamd.8.router	2005-08-18 15:06:23.000000000 +0200
++++ netkit-bootparamd-0.17-pre20000412/rpc.bootparamd/bootparamd.8	2005-08-18 15:06:23.000000000 +0200
+@@ -2,50 +2,73 @@
+ .\"
+ .\"    $Id: bootparamd.8,v 1.11 2000/04/13 01:56:02 dholland Exp $
+ .\"
+-.Dd November 8, 1989
+-.Dt BOOTPARAMD 8
+-.Os "Linux NetKit (0.17-pre-20000412)"
+-.Sh NAME
+-.Nm bootparamd 
+-.Nd boot parameter server
+-.Sh SYNOPSIS
+-.Nm rpc.bootparamd
+-.Op Fl d
+-.Op Fl s
+-.Op Fl r Ar router
+-.Op Fl f Ar file
+-.Op Fl l
+-.Sh DESCRIPTION
+-.Nm bootparamd
+-is a server process that provides information to diskless clients
++.TH BOOTPARAMD 8  "8 November 1989"
++.SH NAME
++bootparamd \- boot parameter server
++.SH SYNOPSIS
++.na
++.B rpc.bootparamd 
++[ 
++.B \-d
++] [
++.B \-s
++] [
++.B \-r
++.I router
++] [
++.B \-f
++.I file
++] [
++.B \-l
++]
++.SH DESCRIPTION
++
++.LP
++\fIbootparamd\fP is a server process that provides information to diskless clients
+ necessary for booting. It consults the
+-.Pa /etc/bootparams
++.BR /etc/bootparams
+ file to find the information it needs.
+-.Pp
++.LP
+ This version will allow the use of aliases on the hostname in the
+-.Pa /etc/bootparams
++.BR /etc/bootparams
+ file. The returned hostname to the whoami request done by the booting client
+ will be the name that appears in 
+-.Pa /etc/bootparams
++.BR /etc/bootparams
+ and not the canonical name. In this way you can keep the answer short enough
+ so that machines that cannot handle long hostnames won't fail during boot.
+-.Sh OPTIONS
+-.Bl -tag -width indent
+-.It Fl d
++.LP
++If the machine running this server is not a router and user doesn't specify 
++the
++.BR -r 
++option, bootparamd will try to find one. Server will make the following 
++attempts to find a router for the client:
++.PP
++.RS
++1) Find a router by sending ICMP_ECHO to ALL_ROUTERS.
++.RE
++.RS
++2) Return our own interface address if we're a router.
++.RE
++.RS
++3) See if our default route can be used by the client.
++.RE
++.PP
++.SH OPTIONS
++.TP
++.IP "\fB-d\fR" 
+ Display debugging information.
+-.It Fl s
++.IP "\fB-s\fR" 
+ Log the debugging information to syslog. 
+-.It Fl r Ar router
++.IP "\fB-r \fIrouter\fR" 
+ The default router (a machine or an IP-address).
+-This defaults to the machine running the server.
+-.It Fl f Ar file
++If you use this option, bootparamd won't look for any other routers.
++.IP "\fB-f \fIfile\fR" 
+ The file to use as boot parameter file instead of /etc/bootparams.
+-.It Fl l
++.IP "\fB-l\fR" 
+ Turn off DNS lookup during host search.
+-.El
+-.Sh FILES
+-.Pa /etc/bootparams
+-.Sh BUGS
++.SH FILES
++.B /etc/bootparams
++.SH BUGS
+ You may find the syslog loggings too verbose.
+-.Sh AUTHOR
++.SH AUTHOR
+ Written by Klas Heggemann <klas@nada.kth.se>
+--- netkit-bootparamd-0.17-pre20000412/rpc.bootparamd/bootparam_default_route.c.router	2005-08-18 15:06:23.000000000 +0200
++++ netkit-bootparamd-0.17-pre20000412/rpc.bootparamd/bootparam_default_route.c	2005-08-18 15:06:23.000000000 +0200
+@@ -0,0 +1,375 @@
++/*
++	bootparam_default_route.c
++	jelinekr@ms.com		01/18/05
++*/
++
++	
++#include <stdlib.h>
++#include <stdio.h>
++#include <string.h>
++#include <sys/socket.h>
++#include <sys/ioctl.h>
++#include <net/if.h>
++#include <netinet/in.h>
++#include <asm/types.h>
++#include <linux/netlink.h>
++#include <linux/rtnetlink.h>
++#include <netdb.h>
++#include <syslog.h>
++#include <arpa/inet.h>
++#include <unistd.h>
++
++#define MAXNREQS	5
++#define BUFSIZE		8192
++#define PATHSIZE	64
++#define PROCIPFWDPATH	"/proc/sys/net/ipv4/conf"
++
++extern	int		debug;
++extern	int		dolog;
++
++u_long                  get_router(struct in_addr src_addr);
++u_long			get_default_route(struct in_addr);
++void			msgout(char *, ...);
++
++/*
++ * Make the following attempts to find a router for the client
++ * 1. find a router by sending ICMP_ECHO to ALL_ROUTERS
++ * 2. return our own interface address if we're a router
++ * 3  see if our default route can be used by the client
++ */
++u_long
++get_default_route(cl_addr)
++	struct in_addr cl_addr;			/* client address */
++{
++	int			n;
++	int			sd;
++	char			proc_ipfwpath[PATHSIZE];
++	struct in_addr		if_addr;	/* interface address */
++	struct in_addr		if_mask;	/* interface mask */
++	struct in_addr		rt_addr;	/* router address */
++
++	if_addr.s_addr = 0L;
++	if_mask.s_addr = 0L;
++	rt_addr.s_addr = 0L;
++
++
++	if (debug)
++		msgout("cl_addr = %s", inet_ntoa(cl_addr));
++
++
++	/*
++	 * Get list of interfaces
++	 */
++
++	{
++		struct ifconf		ifc;
++		struct ifreq		ifr;
++		struct ifreq		*ifrp;
++		int			numreqs = MAXNREQS;
++		
++	
++	
++		if ((sd = socket(AF_INET, SOCK_DGRAM, IPPROTO_IP)) < 0) {
++			perror("socket");
++			return ((u_long)0);
++		}
++
++		ifc.ifc_buf = NULL;
++
++		for (;;) {
++
++			ifc.ifc_len = sizeof(struct ifreq) * numreqs;
++
++			if ((ifc.ifc_buf = 
++				realloc(ifc.ifc_buf, ifc.ifc_len)) == NULL) {
++				perror("realloc");
++				return ((u_long)0);
++			}
++
++			if (ioctl(sd, SIOCGIFCONF, &ifc) < 0) {
++				perror("SIOCGIFCONF");
++				free(ifc.ifc_buf);
++				close(sd);
++				return ((u_long)0);
++			}
++
++			if (ifc.ifc_len == (int)(sizeof(struct ifreq) * numreqs)) {
++				if (debug)
++					msgout("Need to realloc() (%d)", numreqs);
++				numreqs += 5;
++				continue;
++			}
++
++			break;
++		}
++
++		ifrp = ifc.ifc_req;
++
++		/*
++		 *  Find out which interface is on client's subnet
++		 */
++
++		for (n = 0; n < ifc.ifc_len; n += sizeof(struct ifreq)) {
++
++			struct sockaddr_in addr;
++			struct sockaddr_in mask;
++			struct sockaddr sa;
++
++			memset(&ifr, 0, sizeof(struct ifreq));
++
++			strncpy(ifr.ifr_name, ifrp->ifr_name, IFNAMSIZ);
++
++			if (ioctl(sd, SIOCGIFADDR, &ifr) != 0) {
++				continue;
++			} else {
++				sa = ifr.ifr_addr;
++				memcpy(&addr, (struct sockaddr_in *)&sa, 
++					sizeof(struct sockaddr_in));
++			}
++
++
++			if (ioctl(sd, SIOCGIFNETMASK, &ifr) < 0) {
++				continue;
++			} else {
++				sa = ifr.ifr_addr; /* ifr_netmask; */
++				memcpy(&mask, (struct sockaddr_in *)&sa, 
++					sizeof(struct sockaddr_in));
++			}
++
++			if (debug)
++				msgout("if_name = %s, if_addr = %x , if_mask = %x",
++					ifr.ifr_name, 
++					ntohl(addr.sin_addr.s_addr),
++					ntohl(mask.sin_addr.s_addr));
++
++			/* assuming that netmask is correctly set */
++			if ((addr.sin_addr.s_addr & mask.sin_addr.s_addr) == 
++				(cl_addr.s_addr & mask.sin_addr.s_addr)) {
++				sprintf(proc_ipfwpath, "%s/%s/forwarding",
++					PROCIPFWDPATH, ifr.ifr_name);
++				memcpy(&if_addr, &addr.sin_addr, 
++					sizeof(struct in_addr));
++				memcpy(&if_mask, &mask.sin_addr, 
++					sizeof(struct in_addr));
++
++			}
++			ifrp++;
++		}
++		close(sd);
++		free(ifc.ifc_buf);
++
++		if (if_addr.s_addr == (u_long)0) {
++			if (debug)
++				msgout("no interface on client's subnet");
++			return ((u_long)0);
++		}
++	}
++
++
++	/*
++	 * Try to find a router by sending ICMP_ECHO to ALL_ROUTERS multicast group
++	 */
++
++	if ((rt_addr.s_addr = (u_long)get_router(if_addr)) != 0) {
++		if (debug)
++			msgout("rt_addr = %s", inet_ntoa(rt_addr));
++		return(rt_addr.s_addr);
++	}
++
++
++	/*
++	 * If ip forwarding is enabled, return ip address of the interface that's on 
++	 * client's subnet
++	 */
++
++	{
++		FILE		*fd;
++		char		buf[2];
++		int		ip_fw = 0;
++
++		if ((fd = fopen(proc_ipfwpath, "r")) != NULL) {
++			fgets(buf, sizeof(buf), fd);
++			ip_fw = atoi(buf);
++
++			(void) fclose(fd);
++		}
++	
++		if (ip_fw == 1) {
++			if (debug)
++				msgout("rt_addr = %s, ip_fw = %d",
++					inet_ntoa(if_addr), ip_fw);
++			return(if_addr.s_addr);
++		}
++	}
++
++
++	/*
++	 * See if our default route could be used by the client
++	 */
++
++	{
++		struct nlmsghdr		*nlMsg;
++		struct rtmsg		*rtMsg;
++		char			buf[BUFSIZE];
++		int			len = 0;
++		int			sd;
++
++		if ((sd = socket(PF_NETLINK, SOCK_DGRAM, NETLINK_ROUTE)) < 0) {
++			perror("socket");
++			return ((u_long)0);
++		}
++
++		memset(buf, 0, BUFSIZE);
++
++		nlMsg = (struct nlmsghdr *)buf;
++		rtMsg = (struct rtmsg *)NLMSG_DATA(nlMsg);
++
++        	nlMsg->nlmsg_len = NLMSG_LENGTH(sizeof(struct rtmsg));
++		nlMsg->nlmsg_type = RTM_GETROUTE;
++		nlMsg->nlmsg_flags = NLM_F_DUMP | NLM_F_REQUEST;
++		nlMsg->nlmsg_seq = 0;             
++		nlMsg->nlmsg_pid = getpid();
++
++		if (send(sd, nlMsg, nlMsg->nlmsg_len, 0) < 0){
++			perror("send");
++			return ((u_long)0);
++		}
++
++		{
++			struct nlmsghdr		*nlHdr;
++			int			nbytes = 0;
++			char			*bufp = buf;
++
++			do {
++	
++				if ((nbytes = recv(sd, bufp, BUFSIZE - len, 0)) < 0) {
++					perror("recv");
++					return((u_long)0);
++				}
++
++				nlHdr = (struct nlmsghdr *)bufp;
++
++				if ((NLMSG_OK(nlHdr, (u_int)nbytes) == (u_int)0) || 
++					(nlHdr->nlmsg_type == NLMSG_ERROR)) {
++					perror("recv");
++					return((u_long)0);
++				}
++
++				if (nlHdr->nlmsg_type == NLMSG_DONE)
++					break;
++				else {
++					bufp += nbytes;
++					len += nbytes;
++				}
++
++				if ((nlHdr->nlmsg_flags & NLM_F_MULTI) == 0)
++					break;
++
++			} while (nlHdr->nlmsg_seq != 0 ||
++					nlHdr->nlmsg_pid != (u_int)getpid());
++
++		}
++
++		if (len == 0)
++			return((u_long)0);
++
++		if (debug)
++			msgout("Read total %d bytes", len);
++
++
++		for (;NLMSG_OK(nlMsg,(u_int)len);nlMsg = NLMSG_NEXT(nlMsg,len)) {
++
++			struct rtattr		*rtAttr;
++			struct rtmsg		*rtMsg;
++			int			rtLen;
++			struct route_info	{
++				u_int	dst;
++				u_int	src;
++				u_int	gw;
++				char	ifName[IF_NAMESIZE];
++			} rt;
++			
++			memset(&rt, 0, sizeof(struct route_info));
++
++			rtMsg = (struct rtmsg *)NLMSG_DATA(nlMsg);
++
++			if ((rtMsg->rtm_family != AF_INET) ||
++				(rtMsg->rtm_table != RT_TABLE_MAIN))
++				continue;
++
++			rtAttr = (struct rtattr *)RTM_RTA(rtMsg);
++			rtLen = RTM_PAYLOAD(nlMsg);
++
++			for (;RTA_OK(rtAttr,rtLen);rtAttr = RTA_NEXT(rtAttr,rtLen)) {
++
++				if (rtAttr->rta_type == RTA_OIF) {
++					if_indextoname(*(int *)RTA_DATA(rtAttr), rt.ifName);
++				} else if (rtAttr->rta_type == RTA_GATEWAY) {
++					rt.gw = *(u_int *)RTA_DATA(rtAttr);
++				} else if (rtAttr->rta_type == RTA_PREFSRC) {
++					rt.src = *(u_int *)RTA_DATA(rtAttr);
++				} else if (rtAttr->rta_type == RTA_DST) {
++					rt.dst = *(u_int *)RTA_DATA(rtAttr);
++				}
++			}
++
++			if (debug)
++				msgout("if = %s, dest = %x, gw = %x",
++					rt.ifName, ntohl(rt.dst), ntohl(rt.gw));
++
++			/*
++			 * We only want a default route that's on client's subnet 
++			 */
++			if ((rt.gw & if_mask.s_addr) !=
++                                    (if_addr.s_addr & if_mask.s_addr))
++                                        continue;
++
++			if ((rt.dst == (u_int)0) ||
++                                    (rt_addr.s_addr == (u_long)0)) {
++                                        rt_addr.s_addr = (u_long)rt.gw;
++
++					if (debug)
++						msgout("rt_addr = %s, gw = %x",
++							inet_ntoa(rt_addr), ntohl(rt.gw));
++			}
++                }
++
++		if (rt_addr.s_addr == (u_long)0)
++			if (debug)
++				msgout("no default route found");
++
++		return (rt_addr.s_addr);
++	}
++}
++
++
++#ifdef  __STDC__
++#include <stdarg.h>
++
++void
++msgout(char *fmt, ...)
++{
++	va_list	args;
++	va_start(args, fmt);
++
++#else
++#include <varargs.h>
++
++void msgout(fmt, va_alist)
++	char		*fmt;
++	va_dcl
++{
++	va_list	args;
++	va_start(args);
++
++#endif /* __STDC__ */
++
++	if (dolog)
++		syslog(LOG_ERR, fmt, args);
++	else {
++		(void) fflush(stderr);
++		(void) vfprintf(stderr, fmt, args);
++		(void) fprintf(stderr, "\n");	
++	}
++	va_end(args);
++}
+--- netkit-bootparamd-0.17-pre20000412/rpc.bootparamd/rpc.bootparamd.c.router	2005-08-18 15:06:23.000000000 +0200
++++ netkit-bootparamd-0.17-pre20000412/rpc.bootparamd/rpc.bootparamd.c	2005-08-18 15:06:23.000000000 +0200
+@@ -8,12 +8,14 @@
+ #include <ctype.h>
+ #include <syslog.h>
+ #include <unistd.h>
++#include <assert.h>
+ 
+ #include "../version.h"
+ const char bootparamd_rcsid[] = 
+   "$Id: rpc.bootparamd.c,v 1.9 1999/09/14 11:01:16 dholland Exp $";
+ 
+ extern int debug, dolog;
++extern int route_addr_ok;
+ extern int dns_lookup; // Turn off/on DNS look-up
+ 
+ extern struct in_addr route_addr;
+@@ -22,6 +24,8 @@
+ static int getthefile(char *askname, char *fileid, char *buffer);
+ static int checkhost(char *askname, char *hostname);
+ 
++u_long get_default_route(struct in_addr cl_addr);
++
+ #define MAXLEN 800
+ 
+ struct hostent *he;
+@@ -80,6 +84,13 @@
+ 	res.client_name = hostname;
+ 	getdomainname(domain_name, MAX_MACHINE_NAME);
+ 	res.domain_name = domain_name;
++ 
++	if (!route_addr_ok) {
++            struct in_addr caddr;
++	    assert(sizeof(addr) == sizeof(caddr));
++            memcpy(&caddr,&addr,sizeof(addr));
++	    route_addr.s_addr = get_default_route(caddr);
++	}
+ 	
+ 	if (res.router_address.address_type != IP_ADDR_TYPE) {
+ 	    res.router_address.address_type = IP_ADDR_TYPE;
+--- netkit-bootparamd-0.17-pre20000412/rpc.bootparamd/Makefile.router	2005-08-18 15:06:23.000000000 +0200
++++ netkit-bootparamd-0.17-pre20000412/rpc.bootparamd/Makefile	2005-08-18 15:06:23.000000000 +0200
+@@ -15,7 +15,7 @@
+ 
+ all: bootparamd callbootd
+ 
+-bootparamd: bootparam_prot_svc.o bootparam_prot_xdr.o rpc.bootparamd.o main.o
++bootparamd: bootparam_prot_svc.o bootparam_prot_xdr.o rpc.bootparamd.o main.o  bootparam_get_router.o bootparam_default_route.o
+ 	${CC} $(LDFLAGS) $^ $(LIBS) -o $@
+ 
+ callbootd: callbootd.o bootparam_prot_clnt.o bootparam_prot_xdr.o 
+@@ -38,6 +38,7 @@
+ bootparam_prot_clnt.o bootparam_prot_xdr.o: bootparam_prot.h
+ bootparam_prot_svc.o: bootparam_prot.h
+ callbootd.o rpc.bootparamd.o main.o: bootparam_prot.h ../version.h
++bootparam_get_router.o bootparam_default_route.o: ../version.h
+ 
+ bootparam_prot.x: $(BOOTPARAMX)
+ 	ln -s $(BOOTPARAMX) bootparam_prot.x
+--- netkit-bootparamd-0.17-pre20000412/rpc.bootparamd/bootparam_get_router.c.router	2005-08-18 15:06:23.000000000 +0200
++++ netkit-bootparamd-0.17-pre20000412/rpc.bootparamd/bootparam_get_router.c	2005-08-18 15:11:33.000000000 +0200
+@@ -0,0 +1,374 @@
++/*  
++	bootparam_get_router.c
++	jelinekr@ms.com		11/15/04
++*/
++
++#include <sys/types.h>
++#include <sys/socket.h>
++#include <sys/signal.h>
++
++#include <netinet/in_systm.h>
++#include <netinet/in.h>
++#include <netinet/ip.h>
++#include <netinet/ip_icmp.h>
++
++#include <arpa/inet.h>
++
++#include <netdb.h>
++#include <stdio.h>
++#include <errno.h>
++#include <string.h>
++#include <strings.h>
++#include <unistd.h>
++#include <stdlib.h>
++
++#define ALL_ROUTERS	"224.0.0.2"
++#define PACKETLEN	8
++#define	MAXPACKETLEN	4096
++#define MAXNUMROUTERS	1024
++#define MAXTIMEOUTCNT	1
++#define MAXBADPACKETS	1
++
++#define	TIMEOUT		300000
++
++extern int		debug;
++
++u_long			get_router(struct in_addr);
++static int		send_pack(int, struct sockaddr_in *);
++static u_long		parse_pack(char *, int, struct sockaddr_in *);
++static u_short		in_cksum(u_short *, int);
++static int		ulong_compare(const void *, const void *);
++static int		support_multicast(void);
++
++#ifdef  __STDC__
++#include <stdarg.h>
++
++void msgout(char *fmt, ...);
++
++#else
++#include <varargs.h>
++
++void msgout(char *fmt, va_alist va_dcl);
++
++#endif /* __STDC__ */
++
++
++/*
++ * Find a router by sending ICMP_ECHO to ALL_ROUTERS multicast group
++ */
++u_long
++get_router(src_addr)
++	struct in_addr		src_addr;
++{
++	struct sockaddr_in	*to;
++	struct sockaddr_in	where_to;
++	struct sockaddr_in	if_addr;
++	struct protoent		*proto;
++	char			*dest_addr;
++	int                     sock;
++
++
++	if (! support_multicast()) {
++		msgout("Multicast not supported");
++		return((u_long)0);
++	}
++
++	dest_addr = ALL_ROUTERS;
++	bcopy(&src_addr.s_addr, &if_addr.sin_addr.s_addr, sizeof(struct in_addr));
++	if_addr.sin_family = AF_INET;
++
++	if (debug)
++		msgout("Source address %s", inet_ntoa(if_addr.sin_addr));
++
++
++	bzero((char *)&where_to, sizeof(struct sockaddr_in));
++	to = (struct sockaddr_in *)&where_to;
++	to->sin_family = AF_INET;
++	to->sin_addr.s_addr = inet_addr(dest_addr);
++
++	if (to->sin_addr.s_addr == (u_long)-1) {
++		msgout("Bad destination address %s", dest_addr);
++		return((u_long)0);
++	}
++
++	if ((proto = getprotobyname("icmp")) == NULL) {
++		msgout("Unknown protocol icmp");
++		return((u_long)0);
++	}
++
++	if ((sock = socket(AF_INET, SOCK_RAW, proto->p_proto)) < 0) {
++		perror("socket");
++		return((u_long)0);
++	}
++
++	if (setsockopt(sock, IPPROTO_IP, IP_MULTICAST_IF,
++			(char *)&if_addr.sin_addr, sizeof (if_addr.sin_addr)) < 0) {
++		msgout("Cannot send multicast packet over interface %s", 
++			inet_ntoa(if_addr.sin_addr));
++		close(sock);
++		return((u_long)0);
++	}
++
++	if (! send_pack(sock, &where_to)) {
++		close(sock);
++		return((u_long)0);
++	}
++
++	{
++		struct sockaddr_in	from;
++		int			fromlen = sizeof(from);
++		char			buf[MAXPACKETLEN];
++		int                     nbytes, buflen = sizeof(buf);
++		u_long                  routers[MAXNUMROUTERS];
++		u_long			router = 0;
++		int			i, nfd, cnt = 0;
++		int			tocnt = 0;
++		int			bpcnt = 0;
++
++		struct timeval		timeout;
++		fd_set			readset;
++
++		timeout.tv_sec  = 0;
++		timeout.tv_usec = TIMEOUT;
++
++		FD_ZERO(&readset);
++		FD_SET(sock, &readset);
++
++		memset (routers, '\0', sizeof(routers));
++
++		while (1) {
++
++			nfd = select(sock+1, &readset, (fd_set *)0 , NULL, &timeout);
++  			if (nfd < 0) {
++				if (errno == EINTR)
++					continue;
++				perror("select");
++				close(sock);
++				return((u_long)0);
++			} else if (nfd == 0) {
++				tocnt++;
++
++				if (debug)
++					msgout("Timed out in recvfrom() (%d)", tocnt);
++
++				if (tocnt > MAXTIMEOUTCNT)
++					break;
++				else
++					continue;
++
++			}
++
++			nbytes = recvfrom(sock, (char *)buf, buflen, 0, 
++					(struct sockaddr *)&from, &fromlen);
++
++			if (nbytes > 0) {
++				if (debug)
++					msgout("Read %d bytes (%d)", nbytes, cnt);
++
++				if ((router = (u_long)parse_pack((char *)buf, nbytes, &from)) != 0) {
++					routers[cnt] = router;
++					cnt++;
++				} else {
++					bpcnt++;
++
++					if (debug)
++						msgout("Bad packet from recvfrom() (%d)", bpcnt);
++
++					if (bpcnt > MAXBADPACKETS)
++						break;
++					else
++						continue;
++				}
++			}
++		}
++
++		close (sock);
++
++		qsort((void *)routers, cnt, sizeof (u_long), ulong_compare);
++
++		for (i = 0; i < cnt; i++) {
++			if (debug)
++				msgout("Routers %x (%d)", ntohl(routers[i]), i);
++		}
++		
++		/* return the one with lowest IP */
++		return ((u_long)routers[0]);
++	}
++}
++
++/*
++ * Send an ICMP packet
++ */
++static int
++send_pack(sock, dst)
++	int			sock;
++	struct sockaddr_in	*dst;
++{
++	char			buf[PACKETLEN];
++	int			nbytes, buflen = sizeof(buf);
++	struct icmp             *icp = (struct icmp *)buf;
++
++	icp->icmp_type = ICMP_ECHO; /* ICMP_ROUTERSOLICIT */
++	icp->icmp_code = 0;
++	icp->icmp_void = 0;
++	icp->icmp_seq = 0;
++	icp->icmp_id = getpid();
++	icp->icmp_cksum = 0;
++
++
++	icp->icmp_cksum = in_cksum((u_short *)icp, buflen);
++
++	nbytes = sendto(sock, (char *)buf, buflen, 0, 
++		(struct sockaddr *)dst, sizeof(struct sockaddr));
++
++	if (nbytes < 0) {
++		perror ("sendto");
++		return(0);
++	}
++
++	if (nbytes != buflen) {
++		msgout("Sent %d bytes, expected %d", nbytes, buflen);
++		return(0);
++	}
++
++	return(nbytes);
++}
++
++/*
++ * Process the received ICMP packet
++ */
++
++static u_long
++parse_pack(buf, nbytes, from)
++	char			*buf;
++	int			nbytes;
++	struct sockaddr_in	*from;
++{
++	int			hlen;
++	struct icmp		*icp;
++	struct ip		*ip;
++	struct in_addr		*router;
++
++
++	ip = (struct ip *)buf;
++	hlen = ip->ip_hl << 2;
++
++	if (nbytes < hlen + ICMP_MINLEN) {
++		msgout("Packet too short %d bytes from %s", nbytes,
++			inet_ntoa(*(struct in_addr *)&from->sin_addr.s_addr));
++		return((u_long)0);
++	}
++
++	nbytes -= hlen;
++	icp = (struct icmp *)(buf + hlen);
++
++	if (icp->icmp_type == ICMP_ECHOREPLY) { /* ICMP_ROUTERSOLICIT */
++
++		if (nbytes != PACKETLEN) {
++			msgout("Received nbytes %d, expected %d", nbytes, PACKETLEN);
++			return((u_long)0);
++		}
++
++		if (icp->icmp_seq != 0) {
++			msgout("Wrong sequence %d", icp->icmp_seq);
++			return((u_long)0);
++		}
++
++		if (icp->icmp_id != getpid()) {
++			msgout("Wrong id %d, expected %d", icp->icmp_id, getpid());
++			return((u_long)0);
++		}
++
++		router = (struct in_addr *)&from->sin_addr;
++
++		if (debug)
++			msgout("Received reply from %s", inet_ntoa(*router));
++
++		return((u_long)router->s_addr);
++	}
++
++	return((u_long)0);
++}
++
++/*
++ * in_cksum --Checksum routine for Internet Protocol family headers (C Version)
++ *
++ * Copyright (c) 1988, 1989, 1990, 1991, 1992, 1993, 1994, 1995, 1996, 1997
++ *      The Regents of the University of California.  All rights reserved.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that: (1) source code distributions
++ * retain the above copyright notice and this paragraph in its entirety, (2)
++ * distributions including binary code include the above copyright notice and
++ * this paragraph in its entirety in the documentation or other materials
++ * provided with the distribution, and (3) all advertising materials mentioning
++ * features or use of this software display the following acknowledgement:
++ * ``This product includes software developed by the University of California,
++ * Lawrence Berkeley Laboratory and its contributors.'' Neither the name of
++ * the University nor the names of its contributors may be used to endorse
++ * or promote products derived from this software without specific prior
++ * written permission.
++ * THIS SOFTWARE IS PROVIDED ``AS IS'' AND WITHOUT ANY EXPRESS OR IMPLIED
++ * WARRANTIES, INCLUDING, WITHOUT LIMITATION, THE IMPLIED WARRANTIES OF
++ * MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE.
++ */
++static u_short
++in_cksum(addr, len)
++	u_short			*addr;
++	int			len;
++{
++	register int		nleft = len;
++	register u_short	*w = addr;
++	register int		sum = 0;
++	u_short			answer = 0;
++
++	/*
++	 * Our algorithm is simple, using a 32 bit accumulator (sum), we add
++	 * sequential 16 bit words to it, and at the end, fold back all the
++	 * carry bits from the top 16 bits into the lower 16 bits.
++	 */
++	while (nleft > 1)  {
++		sum += *w++;
++		nleft -= 2;
++	}
++
++	/* mop up an odd byte, if necessary */
++	if (nleft == 1) {
++		*(unsigned char *)(&answer) = *(unsigned char *)w ;
++		sum += answer;
++	}
++
++	/* add back carry outs from top 16 bits to low 16 bits */
++	sum = (sum >> 16) + (sum & 0xffff);	/* add hi 16 to low 16 */
++	sum += (sum >> 16);			/* add carry */
++	answer = ~sum;				/* truncate to 16 bits */
++	return(answer);
++}
++
++static int
++support_multicast(void)
++{
++        int			sock;
++        unsigned char		ttl = 1;
++
++        if ((sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)) < 0) {
++                perror("socket");
++                return(0);
++        }
++
++        if (setsockopt(sock, IPPROTO_IP, IP_MULTICAST_TTL, (char *)&ttl, sizeof (ttl)) < 0) {
++		perror("setsockopt");
++                close(sock);
++                return(0);
++        }
++        close(sock);
++        return(1);
++}
++
++static int
++ulong_compare(p1, p2)
++	const void		*p1;
++	const void		*p2;
++{
++	return(*(u_long *)p1 - *(u_long *)p2);
++}
+--- netkit-bootparamd-0.17-pre20000412/rpc.bootparamd/main.c.router	2005-08-18 15:06:23.000000000 +0200
++++ netkit-bootparamd-0.17-pre20000412/rpc.bootparamd/main.c	2005-08-18 15:06:23.000000000 +0200
+@@ -28,8 +28,7 @@
+ char *bootpfile = "/etc/bootparams";
+ 
+ static char *progname;
+-static struct sockaddr_in my_addr;
+-static int route_addr_ok;
++int route_addr_ok = 0;
+ 
+ int
+ main(int argc, char **argv)
+@@ -94,13 +93,7 @@
+ 	perror(bootpfile);
+ 	exit(1);
+     }
+-    
+-
+-    if (!route_addr_ok) {
+-	get_myaddress(&my_addr);
+-	memcpy(&route_addr, &my_addr.sin_addr.s_addr, sizeof(route_addr));
+-    }
+-    
++        
+     if (!debug) {
+ 	pid = fork();
+ 	if (pid < 0) {

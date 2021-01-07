@@ -1,0 +1,13 @@
+--- netkit-bootparamd-0.17-pre20000412/rpc.bootparamd/callbootd.c.old	1997-09-23 10:39:26.000000000 +0200
++++ netkit-bootparamd-0.17-pre20000412/rpc.bootparamd/callbootd.c	2006-01-17 07:25:25.000000000 +0100
+@@ -80,6 +80,10 @@
+     
+     if (!broadcast) {
+ 	clnt = clnt_create(server,BOOTPARAMPROG, BOOTPARAMVERS, "udp");
++	if(!clnt) {
++	    fprintf(stderr,"Unable to connect to '%s'.\n", server);
++	    exit(1);	    
++	}
+     } 
+ 
+     switch (argc) {

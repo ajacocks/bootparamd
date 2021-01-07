@@ -1,0 +1,97 @@
+--- netkit-bootparamd-0.17-pre20000412/rpc.bootparamd/main.c.res-fix	2005-01-18 10:06:35.000000000 +0100
++++ netkit-bootparamd-0.17-pre20000412/rpc.bootparamd/main.c	2005-01-18 10:07:43.000000000 +0100
+@@ -44,7 +44,7 @@
+     if (progname) progname++;
+     else progname = argv[0];
+ 
+-    while ((c = getopt(argc, argv,"dsr:f:")) != EOF) {
++    while ((c = getopt(argc, argv,"ldsr:f:")) != EOF) {
+ 	switch (c) {
+ 	 case 'd':
+ 	    debug = 1;
+--- netkit-bootparamd-0.17-pre20000412/rpc.bootparamd/rpc.bootparamd.c.res-fix	2005-01-18 10:06:35.000000000 +0100
++++ netkit-bootparamd-0.17-pre20000412/rpc.bootparamd/rpc.bootparamd.c	2005-01-18 10:06:35.000000000 +0100
+@@ -184,7 +184,7 @@
+     int pass_num;
+ 
+     int ch, pch, fid_len, res = 0;
+-    int match = 0;
++    int match;
+     char info[MAX_FILEID + MAX_PATH_LEN+MAX_MACHINE_NAME + 3];
+     
+     bpf = fopen(bootpfile, "r");
+@@ -196,25 +196,36 @@
+     pass_num = dns_lookup ? 2 : 1;
+ 
+     /* Two passes; avoid unnecessary DNS lookups during the first one.  */
++
++    match = 0;
+     for (pass = 0; pass < pass_num; pass++) {
+-	 rewind (bpf);
+-	 while (fscanf(bpf, "%s", hostname) >  0  && !match) {
++	 while (fscanf(bpf, "%s", hostname) >  0) {
+ 	      if ( *hostname != '#' ) { /* comment */
+ 		   if (!strcmp(hostname, askname)) {
+ 			match = 1;
++                        break;
+ 		   } 
+ 		   else if (dns_lookup && pass > 0) {
+ 			he = gethostbyname(hostname);
+-			if (he && !strcmp(he->h_name, askname)) match = 1;
++			if (he && !strcmp(he->h_name, askname)) { 
++                           match = 1;
++                           break;
++                        }
+ 		   }
+ 	      }
+-	      /* skip to next entry */
+-	      if (match) break;
++
++	      /* skip to next entry */	
+ 	      pch = ch = getc(bpf); 
+ 	      while ( ! ( ch == '\n' && pch != '\\') && ch != EOF) {
+ 		   pch = ch; ch = getc(bpf);
+ 	      }
+ 	 }
++
++         /* go out or perform second pass */ 
++         if(match)
++           break;
++ 	 else
++           rewind (bpf);
+     }
+ 
+     /* if match is true we read the rest of the line to get the
+@@ -264,7 +275,7 @@
+ {
+     int ch, pch;
+     FILE *bpf;
+-    int res = 0;
++    int res;
+     int pass, pass_num;
+  
+     bpf = fopen(bootpfile, "r");
+@@ -276,8 +287,9 @@
+     pass_num = dns_lookup ? 2 : 1;
+ 
+     /* Two passes; avoid unnecessary DNS lookups during the first one.  */
++
++    res = 0;
+     for (pass = 0; pass < pass_num; pass++) {
+-	rewind (bpf);
+         while (fscanf(bpf, "%s", hostname) > 0) {
+  	   if (!strcmp(hostname, askname)) {
+ 	      /* return true for match of hostname */
+@@ -298,6 +310,12 @@
+ 	      pch = ch; ch = getc(bpf);
+ 	   }
+         }
++
++        /* go out or perform second pass */ 
++        if(res)
++           break;
++	else
++          rewind (bpf);
+     }
+ 
+     if (fclose(bpf)) { fprintf(stderr,"Could not close %s\n", bootpfile); }

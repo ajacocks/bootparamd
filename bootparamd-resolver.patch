@@ -1,0 +1,54 @@
+diff -dru netkit-bootparamd-0.17-pre20000412/rpc.bootparamd/rpc.bootparamd.c netkit-bootparamd-0.17-pre20000412.patched/rpc.bootparamd/rpc.bootparamd.c
+--- netkit-bootparamd-0.17-pre20000412/rpc.bootparamd/rpc.bootparamd.c	Tue Sep 14 12:01:16 1999
++++ netkit-bootparamd-0.17-pre20000412.patched/rpc.bootparamd/rpc.bootparamd.c	Mon May 10 12:17:06 2004
+@@ -178,6 +178,7 @@
+ {
+     FILE *bpf;
+     char *where;
++    int pass;
+ 
+     int ch, pch, fid_len, res = 0;
+     int match = 0;
+@@ -189,22 +190,26 @@
+ 	exit(1);
+     }
+ 
+-    while (fscanf(bpf, "%s", hostname) >  0  && !match) {
+-	if ( *hostname != '#' ) { /* comment */
+-	    if (!strcmp(hostname, askname)) {
+-		match = 1;
+-	    } 
+-	    else {
+-		he = gethostbyname(hostname);
+-		if (he && !strcmp(he->h_name, askname)) match = 1;
+-	    }
+-	}
+-	/* skip to next entry */
+-	if (match) break;
+-	pch = ch = getc(bpf); 
+-	while ( ! ( ch == '\n' && pch != '\\') && ch != EOF) {
+-	    pch = ch; ch = getc(bpf);
+-	}
++    /* Two passes; avoid unnecessary DNS lookups during the first one.  */
++    for (pass = 0; pass < 2; pass++) {
++	 rewind (bpf);
++	 while (fscanf(bpf, "%s", hostname) >  0  && !match) {
++	      if ( *hostname != '#' ) { /* comment */
++		   if (!strcmp(hostname, askname)) {
++			match = 1;
++		   } 
++		   else if (pass > 0) {
++			he = gethostbyname(hostname);
++			if (he && !strcmp(he->h_name, askname)) match = 1;
++		   }
++	      }
++	      /* skip to next entry */
++	      if (match) break;
++	      pch = ch = getc(bpf); 
++	      while ( ! ( ch == '\n' && pch != '\\') && ch != EOF) {
++		   pch = ch; ch = getc(bpf);
++	      }
++	 }
+     }
+ 
+     /* if match is true we read the rest of the line to get the

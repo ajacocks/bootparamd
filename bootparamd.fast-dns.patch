@@ -1,0 +1,144 @@
+--- netkit-bootparamd-0.17-pre20000412/rpc.bootparamd/main.c.old	1999-03-27 08:38:15.000000000 +0100
++++ netkit-bootparamd-0.17-pre20000412/rpc.bootparamd/main.c	2004-12-06 11:14:13.285156296 +0100
+@@ -24,6 +24,7 @@
+ int debug = 0;
+ int dolog = 0;
+ struct in_addr route_addr;
++int   dns_lookup = 1; // Default DNS lookup is ON 
+ char *bootpfile = "/etc/bootparams";
+ 
+ static char *progname;
+@@ -77,9 +78,12 @@
+ 	    setlogmask(LOG_UPTO(LOG_NOTICE));
+ #endif
+ 	    break;
++         case 'l':
++            dns_lookup = 0; // Turn off DNS look-up
++            break;
+ 	 default:
+ 	    fprintf(stderr, 
+-		    "Usage: %s [-d] [-s] [-r router] [-f bootparmsfile]\n", 
++		    "Usage: %s [-d] [-s] [-r router] [-f bootparmsfile] [-l]\n", 
+ 		    argv[0]);
+ 	    exit(1);
+ 	}
+--- netkit-bootparamd-0.17-pre20000412/rpc.bootparamd/rpc.bootparamd.c.old	2004-12-06 10:37:55.000000000 +0100
++++ netkit-bootparamd-0.17-pre20000412/rpc.bootparamd/rpc.bootparamd.c	2004-12-06 11:10:30.741988000 +0100
+@@ -14,6 +14,8 @@
+   "$Id: rpc.bootparamd.c,v 1.9 1999/09/14 11:01:16 dholland Exp $";
+ 
+ extern int debug, dolog;
++extern int dns_lookup; // Turn off/on DNS look-up
++
+ extern struct in_addr route_addr;
+ extern char *bootpfile;
+ 
+@@ -179,6 +181,7 @@
+     FILE *bpf;
+     char *where;
+     int pass;
++    int pass_num;
+ 
+     int ch, pch, fid_len, res = 0;
+     int match = 0;
+@@ -190,15 +193,17 @@
+ 	exit(1);
+     }
+ 
++    pass_num = dns_lookup ? 2 : 1;
++
+     /* Two passes; avoid unnecessary DNS lookups during the first one.  */
+-    for (pass = 0; pass < 2; pass++) {
++    for (pass = 0; pass < pass_num; pass++) {
+ 	 rewind (bpf);
+ 	 while (fscanf(bpf, "%s", hostname) >  0  && !match) {
+ 	      if ( *hostname != '#' ) { /* comment */
+ 		   if (!strcmp(hostname, askname)) {
+ 			match = 1;
+ 		   } 
+-		   else if (pass > 0) {
++		   else if (dns_lookup && pass > 0) {
+ 			he = gethostbyname(hostname);
+ 			if (he && !strcmp(he->h_name, askname)) match = 1;
+ 		   }
+@@ -260,33 +265,41 @@
+     int ch, pch;
+     FILE *bpf;
+     int res = 0;
+-    
++    int pass, pass_num;
++ 
+     bpf = fopen(bootpfile, "r");
+     if (!bpf) {
+ 	fprintf(stderr, "No %s\n", bootpfile);
+ 	exit(1);
+     }
+ 
+-    while (fscanf(bpf, "%s", hostname) > 0) {
+-	if (!strcmp(hostname, askname)) {
+-	    /* return true for match of hostname */
+-	    res = 1;
+-	    break;
+-	} 
+-	else {
+-	    /* check the alias list */
+-	    he = gethostbyname(hostname);
+-	    if (he && !strcmp(askname, he->h_name)) {
+-		res = 1;
+-		break;
+-	    }
+-	}
+-	/* skip to next entry */
+-	pch = ch = getc(bpf); 
+-	while (!(ch == '\n' && pch != '\\') && ch != EOF) {
+-	    pch = ch; ch = getc(bpf);
+-	}
++    pass_num = dns_lookup ? 2 : 1;
++
++    /* Two passes; avoid unnecessary DNS lookups during the first one.  */
++    for (pass = 0; pass < pass_num; pass++) {
++	rewind (bpf);
++        while (fscanf(bpf, "%s", hostname) > 0) {
++ 	   if (!strcmp(hostname, askname)) {
++	      /* return true for match of hostname */
++	      res = 1;
++	      break;
++	   } 
++  	   else if(dns_lookup && pass > 0) {
++ 	      /* check the alias list */
++	      he = gethostbyname(hostname);
++	      if (he && !strcmp(askname, he->h_name)) {
++	  	  res = 1;
++		  break;
++	      }
++	   }
++	   /* skip to next entry */
++	   pch = ch = getc(bpf); 
++	   while (!(ch == '\n' && pch != '\\') && ch != EOF) {
++	      pch = ch; ch = getc(bpf);
++	   }
++        }
+     }
++
+     if (fclose(bpf)) { fprintf(stderr,"Could not close %s\n", bootpfile); }
+     return(res);
+ }
+--- netkit-bootparamd-0.17-pre20000412/rpc.bootparamd/bootparamd.8.old	2004-12-06 10:37:55.000000000 +0100
++++ netkit-bootparamd-0.17-pre20000412/rpc.bootparamd/bootparamd.8	2004-12-06 11:13:00.599206240 +0100
+@@ -14,6 +14,7 @@
+ .Op Fl s
+ .Op Fl r Ar router
+ .Op Fl f Ar file
++.Op Fl l
+ .Sh DESCRIPTION
+ .Nm bootparamd
+ is a server process that provides information to diskless clients
+@@ -39,6 +40,8 @@
+ This defaults to the machine running the server.
+ .It Fl f Ar file
+ The file to use as boot parameter file instead of /etc/bootparams.
++.It Fl l
++Turn off DNS lookup during host search.
+ .El
+ .Sh FILES
+ .Pa /etc/bootparams
